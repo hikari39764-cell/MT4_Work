@@ -1,7 +1,4 @@
 #include <Novice.h>
-#include <algorithm>
-#include <cmath>
-#include <numbers>
 
 #ifdef _DEBUG
 #include <imgui.h>
@@ -9,63 +6,11 @@
 
 const char kWindowTitle[] = "LC1C_14_コウケンリュウ";
 
-// 3次元ベクトル
-struct Vector3 {
+// 2次元ベクトル
+struct Vector2 {
 	float x;
 	float y;
-	float z;
 };
-
-// 4x4行列
-struct Matrix4x4 {
-	float m[4][4];
-};
-
-// 球面座標
-struct Spherical {
-	float radius; // 動径
-	float theta;  // 仰角
-	float phi;    // 方位角
-};
-
-// 球面座標から直交座標へ変換する
-Vector3 ToCartesian(const Spherical& s) {
-	float rho = s.radius * std::cos(s.theta);
-	return {rho * std::cos(s.phi), s.radius * std::sin(s.theta), rho * std::sin(s.phi)};
-}
-
-// ベクトルを正規化する
-Vector3 Normalize(const Vector3& v) {
-	float length = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-	if (length == 0.0f) {
-		return {0.0f, 0.0f, 0.0f};
-	}
-	return {v.x / length, v.y / length, v.z / length};
-}
-
-// 外積を求める
-Vector3 Cross(const Vector3& v1, const Vector3& v2) {
-	return {
-		v1.y * v2.z - v1.z * v2.y,
-		v1.z * v2.x - v1.x * v2.z,
-		v1.x * v2.y - v1.y * v2.x,
-	};
-}
-
-// 注視点を向くカメラのワールド行列を作成する
-Matrix4x4 MakeCameraMatrix(const Vector3& eye, const Vector3& target) {
-	Vector3 worldUp = {0.0f, 1.0f, 0.0f};
-	Vector3 forward = Normalize({target.x - eye.x, target.y - eye.y, target.z - eye.z});
-	Vector3 right = Normalize(Cross(worldUp, forward));
-	Vector3 up = Cross(forward, right);
-
-	return {{
-		{right.x, right.y, right.z, 0.0f},
-		{up.x, up.y, up.z, 0.0f},
-		{forward.x, forward.y, forward.z, 0.0f},
-		{eye.x, eye.y, eye.z, 1.0f},
-	}};
-}
 
 // Windowsアプリでのエントリーポイント(main関数)
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
@@ -77,11 +22,15 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 	char keys[256] = {0};
 	char preKeys[256] = {0};
 
-	// 球面座標と注視点の初期化
-	const float halfPi = std::numbers::pi_v<float> / 2.0f;
-	const float limit = halfPi - 0.01f;
-	Spherical s = {6.0f, 0.0f, -halfPi};
-	Vector3 target = {0.0f, 0.0f, 0.0f};
+	// 円の位置と半径の初期化
+	Vector2 target = {640.0f, 360.0f};
+	Vector2 pos = {640.0f, 360.0f};
+	const int radiusA = 12;
+	const int radiusB = 20;
+
+	// 60fpsでの追従速度
+	const float deltaTime = 1.0f / 60.0f;
+	float speed = 6.0f;
 
 	// ウィンドウの×ボタンが押されるまでループ
 	while (Novice::ProcessMessage() == 0) {
@@ -97,27 +46,25 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		///
 
 #ifdef _DEBUG
-		// 球面座標を編集する
+		// 追従速度を変更する
 		ImGui::SetNextWindowPos(ImVec2(20.0f, 20.0f), ImGuiCond_Once);
-		ImGui::SetNextWindowSize(ImVec2(580.0f, 320.0f), ImGuiCond_Once);
-		bool isWindowOpen = ImGui::Begin("Spherical Coordinates");
+		ImGui::SetNextWindowSize(ImVec2(360.0f, 180.0f), ImGuiCond_Once);
+		bool isWindowOpen = ImGui::Begin("Interpolation Controller");
 		if (isWindowOpen) {
-			ImGui::Text("Target: (0, 0, 0) / +Y up / Camera +Z forward");
-			ImGui::Separator();
-			ImGui::InputFloat("Radius", &s.radius, 0.1f, 1.0f, "%.3f");
-			ImGui::InputFloat("Theta: elevation (rad)", &s.theta, 0.01f, 0.1f, "%.3f");
-			ImGui::InputFloat("Phi: azimuth (rad)", &s.phi, 0.01f, 0.1f, "%.3f");
+			ImGui::Text("Target: Mouse Position (Red Circle)");
+			ImGui::SliderFloat("Speed", &speed, 0.0f, 20.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		}
 #endif
 
-		// 注視点との重なりと真上・真下を避ける
-		s.radius = (std::max)(s.radius, 0.1f);
-		s.theta = std::clamp(s.theta, -limit, limit);
+		// 円Aをマウスカーソルの位置に合わせる
+		int mouseX = 0;
+		int mouseY = 0;
+		Novice::GetMousePosition(&mouseX, &mouseY);
+		target = {static_cast<float>(mouseX), static_cast<float>(mouseY)};
 
-		// カメラの位置とワールド行列を求める
-		Vector3 offset = ToCartesian(s);
-		Vector3 pos = {target.x + offset.x, target.y + offset.y, target.z + offset.z};
-		Matrix4x4 cameraMatrix = MakeCameraMatrix(pos, target);
+		// 円Bを円Aの位置へ線形補間で近づける
+		pos.x += (speed * deltaTime) * (target.x - pos.x);
+		pos.y += (speed * deltaTime) * (target.y - pos.y);
 
 		///
 		/// ↑更新処理ここまで
@@ -128,29 +75,32 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		///
 
 #ifdef _DEBUG
-		// 球面座標と直交座標、カメラ行列を表示する
+		// 追従位置と補間割合を表示する
 		if (isWindowOpen) {
 			ImGui::Separator();
-			ImGui::Text("Spherical: r = %.3f, theta = %.3f rad, phi = %.3f rad", s.radius, s.theta, s.phi);
-			ImGui::Text("Cartesian: x = %.3f, y = %.3f, z = %.3f", pos.x, pos.y, pos.z);
-			ImGui::Separator();
-			ImGui::Text("Camera matrix");
-			for (int row = 0; row < 4; ++row) {
-				ImGui::Text("%8.3f %8.3f %8.3f %8.3f",
-					cameraMatrix.m[row][0], cameraMatrix.m[row][1], cameraMatrix.m[row][2], cameraMatrix.m[row][3]);
-			}
+			ImGui::Text("Mouse Pos: (%.1f, %.1f)", target.x, target.y);
+			ImGui::Text("Circle Pos: (%.1f, %.1f)", pos.x, pos.y);
+			ImGui::Text("Delta Time: %.4f s (60fps)", deltaTime);
+			ImGui::Text("Interpolation: %.3f", speed * deltaTime);
 		}
 		ImGui::End();
 #else
 		// Releaseでは計算結果を画面に表示する
-		Novice::ScreenPrintf(20, 20, "Spherical: r = %.3f, theta = %.3f rad, phi = %.3f rad", s.radius, s.theta, s.phi);
-		Novice::ScreenPrintf(20, 40, "Cartesian: x = %.3f, y = %.3f, z = %.3f", pos.x, pos.y, pos.z);
-		Novice::ScreenPrintf(20, 60, "Camera matrix");
-		for (int row = 0; row < 4; ++row) {
-			Novice::ScreenPrintf(20, 80 + row * 20, "%8.3f %8.3f %8.3f %8.3f",
-				cameraMatrix.m[row][0], cameraMatrix.m[row][1], cameraMatrix.m[row][2], cameraMatrix.m[row][3]);
-		}
+		Novice::ScreenPrintf(20, 20, "Speed: %.2f / Delta Time: %.4f s (60fps)", speed, deltaTime);
+		Novice::ScreenPrintf(20, 40, "Mouse Pos: (%.1f, %.1f)", target.x, target.y);
+		Novice::ScreenPrintf(20, 60, "Circle Pos: (%.1f, %.1f)", pos.x, pos.y);
 #endif
+
+		// 円Aと円Bの中心を結ぶ線を描画する
+		int targetX = static_cast<int>(target.x);
+		int targetY = static_cast<int>(target.y);
+		int posX = static_cast<int>(pos.x);
+		int posY = static_cast<int>(pos.y);
+		Novice::DrawLine(posX, posY, targetX, targetY, WHITE);
+
+		// 重なったときも両方が見えるように円Bから描画する
+		Novice::DrawEllipse(posX, posY, radiusB, radiusB, 0.0f, GREEN, kFillModeSolid);
+		Novice::DrawEllipse(targetX, targetY, radiusA, radiusA, 0.0f, RED, kFillModeSolid);
 
 		///
 		/// ↑描画処理ここまで
