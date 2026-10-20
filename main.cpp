@@ -199,6 +199,30 @@ Quaternion DirectionToDirection(const Vector3& from, const Vector3& to) {
 	return Normalize(Quaternion{cross.x, cross.y, cross.z, 1.0f + dot});
 }
 
+// 単位Quaternion同士を最短経路で球面線形補間する
+Quaternion Slerp(const Quaternion& q0, const Quaternion& q1, float t) {
+	// 正規化は呼び出し側で行い、この関数内では繰り返さない
+	t = std::clamp(t, 0.0f, 1.0f);
+	Quaternion end = q1;
+	float dot = Dot(q0, end);
+	if (dot < 0.0f) {
+		// 同じ回転を表す符号反転側を使い、最短経路を選ぶ
+		end = -end;
+		dot = -dot;
+	}
+	// 丸め誤差によるacosの定義域外を防ぐ
+	dot = std::clamp(dot, 0.0f, 1.0f);
+	if (dot > 1.0f - kEpsilon) {
+		// 角度がほぼ0のときは極限の線形補間を使い、0除算を避ける
+		return (1.0f - t) * q0 + t * end;
+	}
+	float theta = std::acos(dot);
+	float sinTheta = std::sin(theta);
+	float scale0 = std::sin((1.0f - t) * theta) / sinTheta;
+	float scale1 = std::sin(t * theta) / sinTheta;
+	return scale0 * q0 + scale1 * end;
+}
+
 // Quaternionを画面に表示する
 void QuaternionScreenPrintf(int x, int y, const Quaternion& quaternion, const char* label) {
 	Novice::ScreenPrintf(x, y, "%8.3f %8.3f %8.3f %8.3f : %s",
@@ -219,13 +243,24 @@ void MatrixScreenPrintf(int x, int y, const Matrix4x4& matrix, const char* label
 	}
 }
 
-// 方向変換の実行結果
-struct DirectionResult {
-	Quaternion rotation;
-	Matrix4x4 matrix;
-	Vector3 rotated;
-	float error;
-};
+// 補間操作用UIをまとめて描画する
+void DrawSlerpControls(float& t) {
+#ifdef _DEBUG
+	ImGui::SetNextWindowPos(ImVec2(20.0f, 420.0f), ImGuiCond_Once);
+	ImGui::SetNextWindowSize(ImVec2(430.0f, 130.0f), ImGuiCond_Once);
+	if (ImGui::Begin("Slerp Controls")) {
+		ImGui::SliderFloat("t", &t, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		if (ImGui::Button("Reset")) {
+			t = 0.5f;
+		}
+		ImGui::Text("Unit inputs / shortest path / radians");
+		ImGui::Text("Identical rotations use the linear limit.");
+	}
+	ImGui::End();
+#else
+	(void)t;
+#endif
+}
 
 // Windowsアプリでのエントリーポイント(main関数)
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
@@ -238,24 +273,12 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 	char preKeys[256] = {0};
 
 	// 課題の入力値を初期化する
-	const int kCaseCount = 4;
-	Vector3 from[kCaseCount] = {
-		{1.0f, 0.0f, 0.0f},
-		Normalize(Vector3{1.0f, 0.7f, 0.5f}),
-		Normalize(Vector3{-0.6f, 0.9f, 0.2f}),
-		{0.0f, 0.0f, 1.0f},
-	};
-	Vector3 to[kCaseCount] = {
-		{-1.0f, 0.0f, 0.0f},
-		-from[1],
-		Normalize(Vector3{0.4f, 0.7f, -0.5f}),
-		from[3],
-	};
-	const char* labels[kCaseCount] = {
-		"rotateMatrix0 : opposite X", "rotateMatrix1 : opposite direction",
-		"rotateMatrix2 : general direction", "rotateMatrix3 : same direction",
-	};
-	DirectionResult results[kCaseCount] = {};
+	Quaternion rotation0 = Normalize(MakeRotateAxisAngleQuaternion({0.71f, 0.71f, 0.0f}, 0.3f));
+	Quaternion rotation1 = Normalize(MakeRotateAxisAngleQuaternion({0.71f, 0.0f, 0.71f}, 3.141592f));
+	const int kSampleCount = 5;
+	const float sampleT[kSampleCount] = {0.0f, 0.3f, 0.5f, 0.7f, 1.0f};
+	const char* labels[kSampleCount] = {"t = 0.0", "t = 0.3", "t = 0.5", "t = 0.7", "t = 1.0"};
+	float t = 0.5f;
 
 	// ウィンドウの×ボタンが押されるまでループ
 	while (Novice::ProcessMessage() == 0) {
@@ -270,14 +293,17 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		/// ↓更新処理ここから
 		///
 
-		// 各方向への回転と、回転後の一致を求める
-		for (int index = 0; index < kCaseCount; ++index) {
-			DirectionResult& result = results[index];
-			result.rotation = DirectionToDirection(from[index], to[index]);
-			result.matrix = MakeRotateMatrix(result.rotation);
-			result.rotated = RotateVector(from[index], result.rotation);
-			result.error = Length(result.rotated - to[index]);
+		// 課題の5つの補間結果を求める
+		Quaternion interpolates[kSampleCount] = {};
+		for (int index = 0; index < kSampleCount; ++index) {
+			interpolates[index] = Slerp(rotation0, rotation1, sampleT[index]);
 		}
+		// 同一回転と符号反転の特異点、操作中の結果を求める
+		Quaternion same = Slerp(rotation0, rotation0, 0.5f);
+		Quaternion oppositeSign = Slerp(rotation0, -rotation0, 0.5f);
+		Quaternion preview = Slerp(rotation0, rotation1, t);
+		Matrix4x4 previewMatrix = MakeRotateMatrix(preview);
+		Vector3 previewVector = RotateVector({1.0f, 0.0f, 0.0f}, preview);
 
 		///
 		/// ↑更新処理ここまで
@@ -288,18 +314,19 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		///
 
 		// 課題の入力と実行結果を表示する
-		Novice::ScreenPrintf(20, 20, "MT4_01_02 : DirectionToDirection / Quaternion -> Row-vector Matrix");
-		for (int index = 0; index < kCaseCount; ++index) {
-			const DirectionResult& result = results[index];
-			int y = 50 + index * 150;
-			MatrixScreenPrintf(20, y, result.matrix, labels[index]);
-			QuaternionScreenPrintf(620, y, result.rotation, "rotation");
-			VectorScreenPrintf(620, y + kRowHeight, from[index], "from");
-			VectorScreenPrintf(620, y + kRowHeight * 2, to[index], "to");
-			VectorScreenPrintf(620, y + kRowHeight * 3, result.rotated, "rotated(from)");
-			Novice::ScreenPrintf(620, y + kRowHeight * 4, "Norm = %.6f / Error = %.8f", Norm(result.rotation), result.error);
+		Novice::ScreenPrintf(20, 20, "MT4_01_03 : Slerp / Shortest Path (x, y, z, w)");
+		QuaternionScreenPrintf(20, 50, rotation0, "rotation0");
+		QuaternionScreenPrintf(20, 50 + kRowHeight, rotation1, "rotation1");
+		for (int index = 0; index < kSampleCount; ++index) {
+			QuaternionScreenPrintf(20, 120 + index * kRowHeight, interpolates[index], labels[index]);
 		}
-		Novice::ScreenPrintf(20, 680, "Compare rotated direction and norm; opposite rotations can have different valid axes.");
+		QuaternionScreenPrintf(20, 275, same, "Slerp(q0, q0, 0.5)");
+		QuaternionScreenPrintf(20, 275 + kRowHeight, oppositeSign, "Slerp(q0, -q0, 0.5)");
+		QuaternionScreenPrintf(20, 350, preview, "interactive result");
+		Novice::ScreenPrintf(20, 350 + kRowHeight, "t = %.3f / Norm = %.6f", t, Norm(preview));
+		MatrixScreenPrintf(650, 50, previewMatrix, "interactive rotation matrix");
+		VectorScreenPrintf(650, 210, previewVector, "rotated +X");
+		DrawSlerpControls(t);
 
 		///
 		/// ↑描画処理ここまで
