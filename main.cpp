@@ -1,4 +1,5 @@
 #include <Novice.h>
+#include <algorithm>
 #include <cmath>
 
 #ifdef _DEBUG
@@ -178,6 +179,26 @@ Vector3 Transform(const Vector3& vector, const Matrix4x4& matrix) {
 	};
 }
 
+// fromをtoへ向ける単位Quaternionを求める
+Quaternion DirectionToDirection(const Vector3& from, const Vector3& to) {
+	Vector3 unitFrom = Normalize(from);
+	Vector3 unitTo = Normalize(to);
+	// 零ベクトルは方向を持たないため、無回転として扱う
+	if (Dot(unitFrom, unitFrom) == 0.0f || Dot(unitTo, unitTo) == 0.0f) {
+		return IdentityQuaternion();
+	}
+	float dot = std::clamp(Dot(unitFrom, unitTo), -1.0f, 1.0f);
+	if (dot <= -1.0f + kEpsilon) {
+		// 真逆ではfromと平行にならない基準軸を選び、垂直な軸で180度回す
+		Vector3 referenceAxis = std::abs(unitFrom.x) < std::abs(unitFrom.z)
+			? Vector3{1.0f, 0.0f, 0.0f} : Vector3{0.0f, 0.0f, 1.0f};
+		Vector3 axis = Normalize(Cross(unitFrom, referenceAxis));
+		return {axis.x, axis.y, axis.z, 0.0f};
+	}
+	Vector3 cross = Cross(unitFrom, unitTo);
+	return Normalize(Quaternion{cross.x, cross.y, cross.z, 1.0f + dot});
+}
+
 // Quaternionを画面に表示する
 void QuaternionScreenPrintf(int x, int y, const Quaternion& quaternion, const char* label) {
 	Novice::ScreenPrintf(x, y, "%8.3f %8.3f %8.3f %8.3f : %s",
@@ -198,29 +219,13 @@ void MatrixScreenPrintf(int x, int y, const Matrix4x4& matrix, const char* label
 	}
 }
 
-// 入力用UIをまとめて描画する
-void DrawRotationControls(Vector3& axis, float& angle, Vector3& point) {
-#ifdef _DEBUG
-	ImGui::SetNextWindowPos(ImVec2(20.0f, 370.0f), ImGuiCond_Once);
-	ImGui::SetNextWindowSize(ImVec2(500.0f, 175.0f), ImGuiCond_Once);
-	if (ImGui::Begin("Rotation Controls")) {
-		ImGui::DragFloat3("Axis", &axis.x, 0.01f);
-		ImGui::DragFloat("Angle (rad)", &angle, 0.01f);
-		ImGui::DragFloat3("Point", &point.x, 0.01f);
-		if (ImGui::Button("Reset")) {
-			axis = {1.0f, 0.4f, -0.2f};
-			angle = 0.45f;
-			point = {2.1f, -0.9f, 1.3f};
-		}
-		ImGui::Text("Row vectors: v * R / zero axis: identity fallback.");
-	}
-	ImGui::End();
-#else
-	(void)axis;
-	(void)angle;
-	(void)point;
-#endif
-}
+// 方向変換の実行結果
+struct DirectionResult {
+	Quaternion rotation;
+	Matrix4x4 matrix;
+	Vector3 rotated;
+	float error;
+};
 
 // Windowsアプリでのエントリーポイント(main関数)
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
@@ -233,9 +238,24 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 	char preKeys[256] = {0};
 
 	// 課題の入力値を初期化する
-	Vector3 axis = {1.0f, 0.4f, -0.2f};
-	float angle = 0.45f;
-	Vector3 pointY = {2.1f, -0.9f, 1.3f};
+	const int kCaseCount = 4;
+	Vector3 from[kCaseCount] = {
+		{1.0f, 0.0f, 0.0f},
+		Normalize(Vector3{1.0f, 0.7f, 0.5f}),
+		Normalize(Vector3{-0.6f, 0.9f, 0.2f}),
+		{0.0f, 0.0f, 1.0f},
+	};
+	Vector3 to[kCaseCount] = {
+		{-1.0f, 0.0f, 0.0f},
+		-from[1],
+		Normalize(Vector3{0.4f, 0.7f, -0.5f}),
+		from[3],
+	};
+	const char* labels[kCaseCount] = {
+		"rotateMatrix0 : opposite X", "rotateMatrix1 : opposite direction",
+		"rotateMatrix2 : general direction", "rotateMatrix3 : same direction",
+	};
+	DirectionResult results[kCaseCount] = {};
 
 	// ウィンドウの×ボタンが押されるまでループ
 	while (Novice::ProcessMessage() == 0) {
@@ -250,12 +270,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		/// ↓更新処理ここから
 		///
 
-		// 同じ回転をQuaternionと行列で求める
-		Quaternion rotation = MakeRotateAxisAngleQuaternion(axis, angle);
-		Matrix4x4 rotateMatrix = MakeRotateMatrix(rotation);
-		Vector3 rotateByQuaternion = RotateVector(pointY, rotation);
-		Vector3 rotateByMatrix = Transform(pointY, rotateMatrix);
-		float error = Length(rotateByQuaternion - rotateByMatrix);
+		// 各方向への回転と、回転後の一致を求める
+		for (int index = 0; index < kCaseCount; ++index) {
+			DirectionResult& result = results[index];
+			result.rotation = DirectionToDirection(from[index], to[index]);
+			result.matrix = MakeRotateMatrix(result.rotation);
+			result.rotated = RotateVector(from[index], result.rotation);
+			result.error = Length(result.rotated - to[index]);
+		}
 
 		///
 		/// ↑更新処理ここまで
@@ -266,13 +288,18 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		///
 
 		// 課題の入力と実行結果を表示する
-		Novice::ScreenPrintf(20, 20, "MT4_01_01 : Quaternion Rotation / Row-vector Matrix");
-		QuaternionScreenPrintf(20, 50, rotation, "rotation (x,y,z,w)");
-		MatrixScreenPrintf(20, 80, rotateMatrix, "rotateMatrix");
-		VectorScreenPrintf(20, 80 + kRowHeight * 6, rotateByQuaternion, "rotateByQuaternion");
-		VectorScreenPrintf(20, 80 + kRowHeight * 7, rotateByMatrix, "rotateByMatrix");
-		Novice::ScreenPrintf(20, 80 + kRowHeight * 8, "Difference = %.8f / Norm(rotation) = %.6f", error, Norm(rotation));
-		DrawRotationControls(axis, angle, pointY);
+		Novice::ScreenPrintf(20, 20, "MT4_01_02 : DirectionToDirection / Quaternion -> Row-vector Matrix");
+		for (int index = 0; index < kCaseCount; ++index) {
+			const DirectionResult& result = results[index];
+			int y = 50 + index * 150;
+			MatrixScreenPrintf(20, y, result.matrix, labels[index]);
+			QuaternionScreenPrintf(620, y, result.rotation, "rotation");
+			VectorScreenPrintf(620, y + kRowHeight, from[index], "from");
+			VectorScreenPrintf(620, y + kRowHeight * 2, to[index], "to");
+			VectorScreenPrintf(620, y + kRowHeight * 3, result.rotated, "rotated(from)");
+			Novice::ScreenPrintf(620, y + kRowHeight * 4, "Norm = %.6f / Error = %.8f", Norm(result.rotation), result.error);
+		}
+		Novice::ScreenPrintf(20, 680, "Compare rotated direction and norm; opposite rotations can have different valid axes.");
 
 		///
 		/// ↑描画処理ここまで
