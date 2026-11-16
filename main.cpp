@@ -49,35 +49,35 @@ Vector2 Normalize(const Vector2& vector) {
 	return (1.0f / length) * vector;
 }
 
-// ワールド座標での台の形
-float f(float x) {
-	return 0.125f * x * x * x + 0.25f * x * x;
+// 2次ベジェ曲線上の位置を求める
+Vector2 Bezier(const Vector2& p0, const Vector2& p1, const Vector2& p2, float t) {
+	float oneMinusT = 1.0f - t;
+	return (oneMinusT * oneMinusT) * p0 + (2.0f * oneMinusT * t) * p1 + (t * t) * p2;
 }
 
-// 手で微分した台の傾き f'(x) = 3x^2/8 + x/2
-float fPrime(float x) {
-	return 0.375f * x * x + 0.5f * x;
+// 手で微分した2次ベジェ曲線の接線ベクトルを求める
+Vector2 BezierDerivative(const Vector2& p0, const Vector2& p1, const Vector2& p2, float t) {
+	return (2.0f * (1.0f - t)) * (p1 - p0) + (2.0f * t) * (p2 - p1);
 }
 
-// 台とバイクのパラメータ（長さはm）
-const float kMinX = 0.0f;
-const float kMaxX = 2.0f;
-const float kMoveSpeed = 1.0f;
-const float kDeltaTime = 1.0f / 60.0f;
-const float kPixelsPerMeter = 240.0f;
-const Vector2 kScreenOrigin = {400.0f, 640.0f};
-const int kRampSegments = 200;
-const float kBodyHalfLength = 0.15f;
-const int kWheelRadius = 10;
+// 今回の制御点は画面座標（y下向き、単位はpx）
+const Vector2 kP0 = {200.0f, 570.0f};
+const Vector2 kInitialP1 = {800.0f, 70.0f};
+const Vector2 kP2 = {1080.0f, 570.0f};
+const float kMinP1X = 400.0f;
+const float kMaxP1X = 880.0f;
+const float kMinP1Y = 20.0f;
+const float kMaxP1Y = 570.0f;
+const int kRoadSegments = 200;
+const float kDirectionLineLength = 120.0f;
+const unsigned int kColorRoad = 0xB0D8FFFF;
+const unsigned int kColorPoint = 0xFFD040FF;
 
-// バイクを台の範囲内で移動する
-float MoveBike(float x, float input, float deltaTime) {
-	return std::clamp(x + input * kMoveSpeed * deltaTime, kMinX, kMaxX);
-}
-
-// y上向きのワールド座標を、y下向きの画面座標へ変換する
-Vector2 WorldToScreen(const Vector2& position) {
-	return {kScreenOrigin.x + kPixelsPerMeter * position.x, kScreenOrigin.y - kPixelsPerMeter * position.y};
+// 入力値を課題の操作範囲に収める
+void ClampCurveInputs(float& t, Vector2& p1) {
+	t = std::clamp(t, 0.0f, 1.0f);
+	p1.x = std::clamp(p1.x, kMinP1X, kMaxP1X);
+	p1.y = std::clamp(p1.y, kMinP1Y, kMaxP1Y);
 }
 
 // 画面座標で線を描く
@@ -86,46 +86,46 @@ void DrawScreenLine(const Vector2& start, const Vector2& end, unsigned int color
 		static_cast<int>(end.x), static_cast<int>(end.y), color);
 }
 
-// 台を細かい折れ線で描く
-void DrawRamp() {
-	Novice::DrawLine(40, static_cast<int>(kScreenOrigin.y), 1240, static_cast<int>(kScreenOrigin.y), 0x606060FF);
-	for (int index = 0; index < kRampSegments; ++index) {
-		float x0 = kMinX + (kMaxX - kMinX) * static_cast<float>(index) / static_cast<float>(kRampSegments);
-		float x1 = kMinX + (kMaxX - kMinX) * static_cast<float>(index + 1) / static_cast<float>(kRampSegments);
-		DrawScreenLine(WorldToScreen({x0, f(x0)}), WorldToScreen({x1, f(x1)}), WHITE);
+// tを細かく区切って道を折れ線で描く
+void DrawBezierRoad(const Vector2& p0, const Vector2& p1, const Vector2& p2) {
+	for (int index = 0; index < kRoadSegments; ++index) {
+		float t0 = static_cast<float>(index) / static_cast<float>(kRoadSegments);
+		float t1 = static_cast<float>(index + 1) / static_cast<float>(kRoadSegments);
+		DrawScreenLine(Bezier(p0, p1, p2, t0), Bezier(p0, p1, p2, t1), kColorRoad);
 	}
 }
 
-// 台の接線方向に車体と車輪を描く
-void DrawBike(const Vector2& position, const Vector2& forward) {
-	Vector2 back = WorldToScreen(position - kBodyHalfLength * forward);
-	Vector2 front = WorldToScreen(position + kBodyHalfLength * forward);
-	DrawScreenLine(back, front, RED);
-	Novice::DrawEllipse(static_cast<int>(back.x), static_cast<int>(back.y),
-		kWheelRadius, kWheelRadius, 0.0f, WHITE, kFillModeWireFrame);
-	Novice::DrawEllipse(static_cast<int>(front.x), static_cast<int>(front.y),
-		kWheelRadius, kWheelRadius, 0.0f, WHITE, kFillModeWireFrame);
+// 曲線上の点から一定の長さの接線を描く
+void DrawCurvePoint(const Vector2& position, const Vector2& lineEnd) {
+	DrawScreenLine(position, lineEnd, RED);
+	Novice::DrawEllipse(static_cast<int>(position.x), static_cast<int>(position.y),
+		8, 8, 0.0f, kColorPoint, kFillModeSolid);
 }
 
-// 現在の位置と傾きのUIをまとめて描画する
-void DrawSlopeUI(float x, const Vector2& position, float slope, const Vector2& forward) {
+// 操作と計算結果のUIをまとめて描画する
+void DrawCurveUI(float& t, Vector2& p1, const Vector2& position, const Vector2& derivative) {
 #ifdef _DEBUG
 	ImGui::SetNextWindowPos(ImVec2(20.0f, 20.0f), ImGuiCond_Once);
-	ImGui::SetNextWindowSize(ImVec2(370.0f, 180.0f), ImGuiCond_Once);
-	if (ImGui::Begin("MT4_02_00 - Slope")) {
-		ImGui::Text("A: move left / D: move right");
+	ImGui::SetNextWindowSize(ImVec2(370.0f, 235.0f), ImGuiCond_Once);
+	if (ImGui::Begin("MT4_02_01 - Bezier Tangent")) {
+		ImGui::SliderFloat("t", &t, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("p1.x", &p1.x, kMinP1X, kMaxP1X, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+		ImGui::SliderFloat("p1.y", &p1.y, kMinP1Y, kMaxP1Y, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+		if (ImGui::Button("Reset")) {
+			t = 0.5f;
+			p1 = kInitialP1;
+		}
 		ImGui::Separator();
-		ImGui::Text("x = %.3f m", x);
-		ImGui::Text("f(x) = %.3f m", position.y);
-		ImGui::Text("f'(x) = %.3f", slope);
-		ImGui::Text("forward = (%.3f, %.3f)", forward.x, forward.y);
-		ImGui::Text("World: +Y up / 1 m = 240 px");
+		ImGui::Text("B(t) = (%.1f, %.1f)", position.x, position.y);
+		ImGui::Text("B'(t) = (%.1f, %.1f)", derivative.x, derivative.y);
+		ImGui::Text("Tangent length = %.0f px", kDirectionLineLength);
+		ImGui::Text("Screen coordinates: +Y down");
 	}
 	ImGui::End();
 #else
-	Novice::ScreenPrintf(20, 20, "MT4_02_00 : Slope / A: left / D: right");
-	Novice::ScreenPrintf(20, 46, "x = %.3f m / f(x) = %.3f m / f'(x) = %.3f", x, position.y, slope);
-	Novice::ScreenPrintf(20, 72, "forward = (%.3f, %.3f) / World: +Y up / 1 m = 240 px", forward.x, forward.y);
+	Novice::ScreenPrintf(20, 20, "MT4_02_01 : Bezier Tangent / t = %.3f / p1 = (%.1f, %.1f)", t, p1.x, p1.y);
+	Novice::ScreenPrintf(20, 46, "B(t) = (%.1f, %.1f) / B'(t) = (%.1f, %.1f)", position.x, position.y, derivative.x, derivative.y);
+	Novice::ScreenPrintf(20, 72, "Tangent length = %.0f px / Screen coordinates: +Y down", kDirectionLineLength);
 #endif
 }
 
@@ -140,7 +140,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 	char preKeys[256] = {0};
 
 	// 課題の入力値を初期化する
-	float x = 0.0f;
+	float t = 0.5f;
+	Vector2 p1 = kInitialP1;
 
 	// ウィンドウの×ボタンが押されるまでループ
 	while (Novice::ProcessMessage() == 0) {
@@ -155,14 +156,12 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		/// ↓更新処理ここから
 		///
 
-		// A/Dの移動量を求め、台の範囲に収める
-		float input = static_cast<float>(keys[DIK_D] != 0) - static_cast<float>(keys[DIK_A] != 0);
-		x = MoveBike(x, input, kDeltaTime);
-
-		// ワールド座標で位置と台に沿う向きを求める
-		Vector2 position = {x, f(x)};
-		float slope = fPrime(x);
-		Vector2 forward = Normalize({1.0f, slope});
+		// 操作範囲を守り、曲線上の位置と接線を求める
+		ClampCurveInputs(t, p1);
+		Vector2 position = Bezier(kP0, p1, kP2, t);
+		Vector2 derivative = BezierDerivative(kP0, p1, kP2, t);
+		Vector2 forward = Normalize(derivative);
+		Vector2 lineEnd = position + kDirectionLineLength * forward;
 
 		///
 		/// ↑更新処理ここまで
@@ -172,11 +171,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 		/// ↓描画処理ここから
 		///
 
-		// 描画するときだけ画面座標へ変換する
-		DrawRamp();
-		DrawBike(position, forward);
-		DrawSlopeUI(x, position, slope, forward);
-		Novice::ScreenPrintf(20, 685, "A / D : move along the ramp   |   ESC : exit");
+		// 画面座標のまま道と一定長の接線を描画する
+		DrawBezierRoad(kP0, p1, kP2);
+		DrawCurvePoint(position, lineEnd);
+		DrawCurveUI(t, p1, position, derivative);
+		Novice::ScreenPrintf(20, 685, "t / p1 : adjust in ImGui (Debug)   |   ESC : exit");
 
 		///
 		/// ↑描画処理ここまで
